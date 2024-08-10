@@ -20,6 +20,7 @@ private:
 
     int ch_start_ = 1;
     int dut_ch_ = 1;
+    int clock_ch_ = 2;
     std::vector<int> enbale_ch_;
     std::vector<int> active_ch_;
     double winsize_ = 0.25e-6;
@@ -39,6 +40,9 @@ private:
     
     std::vector<double> *w_step;
     std::vector<double> *t_step;
+
+    void find_capacitors(const int dut_ch); // find capacitor based on signal shape and features.
+    void find_capacitors(const int dut_ch, const int clock_ch); // use the clock channel to find capacitors.
 };
 
 #endif

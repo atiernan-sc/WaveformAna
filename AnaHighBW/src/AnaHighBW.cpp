@@ -24,6 +24,7 @@ void AnaHighBW::initialize(BetaConfigMgr* const configMgr) {
     const auto &general = yaml_config["general"];
     enbale_ch_ = general["enable_channels"].as<std::vector<int>>();
     dut_ch_ = general["dut_channel"].as<int>();
+    clock_ch_ = general["clock_channel"].as<int>();
     winsize_ = general["winsize"].as<double>();
     peak_finding_threshold_ = general["peak_finding_threshold"].as<double>();
     
@@ -56,6 +57,25 @@ bool AnaHighBW::execute(BetaConfigMgr* const configMgr){
         }
     }
     
+    // find_capacitors(dut_ch_);
+    find_capacitors(dut_ch_, clock_ch_);
+    
+    // dumping traces to output.
+    for(auto &ch : active_ch_) {
+        std::move(i_t[ch]->begin(), i_t[ch]->end(), std::back_inserter(*o_t[ch]));
+        std::move(i_w[ch]->begin(), i_w[ch]->end(), std::back_inserter(*o_w[ch]));
+    }
+
+    return true;
+}
+
+void AnaHighBW::finalize(BetaConfigMgr* const configMgr){
+  // pass
+}
+
+// User functions
+// ===============================================================================================================
+void AnaHighBW::find_capacitors(const int dut_ch) {
     // calculate the window for average filter.
     double low_b = *(i_t[dut_ch_]->begin()) + winsize_;
     auto _end = std::lower_bound(i_t[dut_ch_]->begin(), i_t[dut_ch_]->end(), low_b);
@@ -83,16 +103,33 @@ bool AnaHighBW::execute(BetaConfigMgr* const configMgr){
         // w_step->push_back(i_w[dut_ch_]->at(pt.index));
         // t_step->push_back(i_t[dut_ch_]->at(pt.index));
     }
-    
-    // dumping traces to output.
-    for(auto &ch : active_ch_) {
-        std::move(i_t[ch]->begin(), i_t[ch]->end(), std::back_inserter(*o_t[ch]));
-        std::move(i_w[ch]->begin(), i_w[ch]->end(), std::back_inserter(*o_w[ch]));
-    }
-
-    return true;
 }
 
-void AnaHighBW::finalize(BetaConfigMgr* const configMgr){
-  // pass
+// ===============================================================================================================
+// ===============================================================================================================
+void AnaHighBW::find_capacitors(const int dut_ch, const int clock_ch) {
+
+    // calculate the window for average filter.
+    double low_b = *(i_t[clock_ch]->begin()) + winsize_;
+    auto _end = std::lower_bound(i_t[clock_ch]->begin(), i_t[clock_ch]->end(), low_b);
+    int winsize = std::distance(i_t[clock_ch]->begin(), _end);
+    
+    // smoothing the voltage-time trace with fixed window moving averaging.
+    *dut_process_voltage = wm::Filter::WindowMean(*i_w[clock_ch], *i_t[clock_ch], winsize_);
+    
+    // compute the divation as score for the given window size.
+    // *dut_process_voltage = wm::Filter::StdScore(*dut_process_voltage, winsize);
+
+    // finding the maximum of the deviation score.
+    // and use the move the maximum time to the left by the rise time of 50% to 90%.
+    auto max_pts = wm::FindMultipleSignalMax(*dut_process_voltage, *i_t[clock_ch_], peak_finding_threshold_);
+    for(auto &pt : max_pts) {
+        auto fall_time =  wm::CalcRiseTime(*dut_process_voltage, *i_t[clock_ch_], pt.index, 0.5, 0.9);
+        auto t_low_iter = std::lower_bound(i_t[dut_ch_]->begin(), i_t[dut_ch_]->end(), i_t[clock_ch_]->at(pt.index) - fall_time);
+        auto fall_time_loc = std::distance(i_t[dut_ch_]->begin(), t_low_iter);
+        w_step->push_back(i_w[dut_ch_]->at(fall_time_loc));
+        t_step->push_back(i_t[dut_ch_]->at(fall_time_loc));
+        // w_step->push_back(i_w[dut_ch_]->at(pt.index));
+        // t_step->push_back(i_t[dut_ch_]->at(pt.index));
+    }
 }
