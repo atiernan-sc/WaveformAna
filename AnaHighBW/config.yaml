@@ -3,7 +3,13 @@ general:
   dut_channel: 0
   clock_channel: 1
   store_waveform: false
-  winsize: 0.50e-6
+  winsize: 3.0e-6
   peak_finding_threshold: 1.0
+
+capacitor_param:
+  time_start: 1500 
+  time_win: 700
+  cycle_size: 1300
+  ncycles: 25
 
 

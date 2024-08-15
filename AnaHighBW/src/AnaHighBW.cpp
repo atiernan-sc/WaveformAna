@@ -27,6 +27,12 @@ void AnaHighBW::initialize(BetaConfigMgr* const configMgr) {
     clock_ch_ = general["clock_channel"].as<int>();
     winsize_ = general["winsize"].as<double>();
     peak_finding_threshold_ = general["peak_finding_threshold"].as<double>();
+
+    const auto &cap_param = yaml_config["capacitor_param"];
+    cap_t_start_ = cap_param["time_start"].as<int>();
+    cap_t_win_ = cap_param["time_win"].as<int>();
+    cap_cycle_size_ = cap_param["cycle_size"].as<int>();
+    cap_ncycles_ = cap_param["ncycles"].as<int>();
     
     // prepare input and output voltage and time branches.
     for(int i = 0; i < enbale_ch_.size(); i++) {
@@ -41,8 +47,8 @@ void AnaHighBW::initialize(BetaConfigMgr* const configMgr) {
     }
 
     // storing processed voltage-time traces.
-    dut_process_time = configMgr->SetOutputBranch<std::vector<double>>("dut_p_t");
-    dut_process_voltage = configMgr->SetOutputBranch<std::vector<double>>("dut_p_w");
+    // dut_process_time = configMgr->SetOutputBranch<std::vector<double>>("dut_p_t");
+    // dut_process_voltage = configMgr->SetOutputBranch<std::vector<double>>("dut_p_w");
 
     // estimate of the voltage and time at each capacitor step.
     w_step = configMgr->SetOutputBranch<std::vector<double>>("w_step");
@@ -58,7 +64,8 @@ bool AnaHighBW::execute(BetaConfigMgr* const configMgr){
     }
     
     // find_capacitors(dut_ch_);
-    find_capacitors(dut_ch_, clock_ch_);
+    // find_capacitors(dut_ch_, clock_ch_);
+    find_capacitors(dut_ch_, cap_t_start_, cap_t_win_, cap_cycle_size_, cap_ncycles_);
     
     // dumping traces to output.
     for(auto &ch : active_ch_) {
@@ -115,21 +122,64 @@ void AnaHighBW::find_capacitors(const int dut_ch, const int clock_ch) {
     int winsize = std::distance(i_t[clock_ch]->begin(), _end);
     
     // smoothing the voltage-time trace with fixed window moving averaging.
-    *dut_process_voltage = wm::Filter::WindowMean(*i_w[clock_ch], *i_t[clock_ch], winsize_);
-    
-    // compute the divation as score for the given window size.
-    // *dut_process_voltage = wm::Filter::StdScore(*dut_process_voltage, winsize);
+    offset_correction(*i_w[clock_ch]);
+    auto th_time = wm::FindTimeAtThreshold(*i_w[clock_ch], *i_t[clock_ch], 0.0);
 
-    // finding the maximum of the deviation score.
-    // and use the move the maximum time to the left by the rise time of 50% to 90%.
-    auto max_pts = wm::FindMultipleSignalMax(*dut_process_voltage, *i_t[clock_ch_], peak_finding_threshold_);
-    for(auto &pt : max_pts) {
-        auto fall_time =  wm::CalcRiseTime(*dut_process_voltage, *i_t[clock_ch_], pt.index, 0.5, 0.9);
-        auto t_low_iter = std::lower_bound(i_t[dut_ch_]->begin(), i_t[dut_ch_]->end(), i_t[clock_ch_]->at(pt.index) - fall_time);
-        auto fall_time_loc = std::distance(i_t[dut_ch_]->begin(), t_low_iter);
-        w_step->push_back(i_w[dut_ch_]->at(fall_time_loc));
-        t_step->push_back(i_t[dut_ch_]->at(fall_time_loc));
-        // w_step->push_back(i_w[dut_ch_]->at(pt.index));
-        // t_step->push_back(i_t[dut_ch_]->at(pt.index));
+    double win_tolerance = 0.45e-6;
+    for(int i = 0; i < th_time.size() - 1; i++) {
+        if(th_time[i+1]-th_time[i] < win_tolerance) continue;
+        int _t_start = std::distance(i_t[dut_ch]->begin(), std::lower_bound(i_t[dut_ch]->begin(), i_t[dut_ch]->end(), th_time[i]));
+        int _t_end = std::distance(i_t[dut_ch]->begin(), std::lower_bound(i_t[dut_ch]->begin(), i_t[dut_ch]->end(), th_time[i+1]));
+        auto _iter_start = i_w[dut_ch]->begin();
+        auto _iter_end = i_w[dut_ch]->begin();
+        std::advance(_iter_start, _t_start);
+        std::advance(_iter_end, _t_end);
+        auto mean = std::accumulate(_iter_start, _iter_end, 0.0) / std::distance(_iter_start, _iter_end);
+        w_step->push_back(mean);
+        int mid_time = std::distance(i_t[dut_ch]->begin(), std::lower_bound(i_t[dut_ch]->begin(), i_t[dut_ch]->end(), (th_time[i+1]+th_time[i])*0.5));
+        t_step->push_back(i_t[dut_ch_]->at(mid_time));
+    }
+}
+
+// ===============================================================================================================
+// ===============================================================================================================
+void AnaHighBW::find_capacitors(
+    const int dut_ch, 
+    const int t_start,
+    const int t_win,
+    const int cycle_size,
+    const int ncycles)
+{   
+    // int cycle_size = 1300;
+
+    int trace_size = i_w[dut_ch]->size();
+
+    for(int i = 0; i < ncycles; i++) { 
+        int _start_pt = t_start + i * cycle_size;
+        int _end_pt = t_start + i * cycle_size + t_win;
+        int _mid_pt = t_start + i * cycle_size + t_win * 0.5;
+        
+        if(_end_pt >= trace_size) break;
+
+        auto _start = i_w[dut_ch]->begin();
+        auto _end = i_w[dut_ch]->begin();
+        std::advance(_start, _start_pt);
+        std::advance(_end, _end_pt);
+        auto sum = std::accumulate(_start, _end, 0.0);
+        int dN = std::distance(_start, _end);
+
+        w_step->push_back(sum/dN);
+        t_step->push_back(_mid_pt);
+    }
+}
+
+
+// ===============================================================================================================
+// ===============================================================================================================
+void AnaHighBW::offset_correction(std::vector<double> &v_trace) {
+    double mean = std::accumulate(v_trace.begin(), v_trace.end(), 0.0) / v_trace.size();
+    auto _iter = v_trace.begin();
+    while(++_iter != v_trace.end()) {
+        *_iter = std::move(*_iter) - mean;
     }
 }
